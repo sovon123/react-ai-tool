@@ -3,6 +3,7 @@ import './App.css'
 import { GEMINI_URL } from './constant'
 import RecentSearch from './components/RecentSearch';
 import QusAns from './components/QusAns';
+import { convertFileToBase64 } from './helper'
 
 function App() {
   const [question, setQuestion] = useState("");
@@ -11,6 +12,7 @@ function App() {
   const [selectedHistory, setSelectedHistory] = useState("");
   const scrollToAns = useRef();
   const [loader, setLoader] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState([]);
 
   //dark mode feature
   const[darkMode, setDarkMode] = useState("dark");
@@ -23,15 +25,16 @@ function App() {
   }, [darkMode]);
 
   const askQuestion = async () => {
-    if(!question && !selectedHistory) return false;
+    if(!question && !selectedHistory && selectedFiles.length === 0) return false;
     const payloadData = question ? question : selectedHistory;
-    if (!payloadData || !payloadData.trim()) {
-      return; 
-    }
+    
     if(question.trim()) {
       if(localStorage.getItem("history")) {
         let history = JSON.parse(localStorage.getItem("history"));
+        history = history.slice(0, 19);
         history = [question, ...history];
+        history = history.map((item)=> item.charAt(0).toUpperCase() + item.slice(1).trim());
+        history = [...new Set(history)];
         localStorage.setItem("history", JSON.stringify(history));
         setRecentHistory(history);
       } else {
@@ -40,17 +43,27 @@ function App() {
       }
     }
 
-    const payload = {
-      contents: [
-        {
-          parts: [{ text: payloadData }]
-        }
-      ]
-    };
-
     setLoader(true);
 
     try {
+      // Prepare parts array with text and any attached files
+      const parts = [];
+      if (payloadData && payloadData.trim()) {
+        parts.push({ text: payloadData });
+      }
+
+      // Convert all selected files to base64 parts for Gemini
+      if (selectedFiles.length > 0) {
+        const fileParts = await Promise.all(selectedFiles.map(file => convertFileToBase64(file)));
+        parts.push(...fileParts);
+      }
+
+      const payload = {
+        contents: [
+          { parts }
+        ]
+      };
+
       const response = await fetch(GEMINI_URL, {
         method: 'POST',
         headers: {
@@ -62,14 +75,18 @@ function App() {
       const data = await response.json();
       if (data.error) {
         console.error("API Error Message:", data.error.message);
+        setLoader(false);
         return;
       }
+      
       if(data.candidates && data.candidates.length > 0) {
         let dataString = data.candidates[0].content.parts[0].text;
         dataString = dataString.split("* ");
         dataString = dataString.map((item) => item.trim());
         setResult([...result, {type: "q", text: question ? question : selectedHistory}, {type: "a", text: dataString}]);
         setQuestion("");
+        setSelectedFiles([]);
+        
         setTimeout(() => {
           if (scrollToAns.current) {
             scrollToAns.current.scrollTop = scrollToAns.current.scrollHeight;
@@ -78,9 +95,11 @@ function App() {
         setLoader(false);
       } else {
         console.warn("Response received, but no candidates found.");
+        setLoader(false);
       }
     } catch (error) {
       console.error("Error caught during fetch:", error);
+      setLoader(false);
     }
   }
 
@@ -99,8 +118,8 @@ function App() {
     <div className={darkMode === 'dark' ? 'dark' : 'light'}>
       <div className='grid grid-cols-5 h-screen text-center'>
         <select onChange={(e) => setDarkMode(e.target.value)} className='fixed dark:text-white text-zinc-800 bottom-0 p-5'>
-          <option value="dark">Dark</option>
-          <option value="light">Light</option>
+          <option value="dark" className='bg-zinc-900 text-white'>Dark</option>
+          <option value="light" className='bg-zinc-100 text-zinc-900'>Light</option>
         </select>
         <RecentSearch recentHistory={recentHistory} setRecentHistory={setRecentHistory} setSelectedHistory={setSelectedHistory} />
         <div className='col-span-4 h-screen overflow-hidden flex flex-col p-10 justify-between relative'>
@@ -138,8 +157,49 @@ function App() {
             </div>
           )}
 
-          {/* Fixed Input Bar */}
+          {/* Input Area with File Previews */}
+          <div className='w-1/2 flex flex-col m-auto gap-2 shrink-0'>
+            {
+              selectedFiles.length > 0 && (
+                <div className='flex gap-2 p-2 overflow-x-auto bg-zinc-200 dark:bg-zinc-800/80 rounded-xl border border-zinc-700'>
+                  {selectedFiles.map((file, index) => (
+                    <div key={index} className="flex items-center gap-2 bg-white dark:bg-zinc-700 px-3 py-1 rounded-full text-xs dark:text-white text-zinc-800 border border-zinc-600">
+                      <span className="truncate max-w-[120px]">{file.name}</span>
+                      <button 
+                        onClick={() => setSelectedFiles(selectedFiles.filter((_, i) => i !== index))}
+                        className="text-red-500 font-bold hover:text-red-700 cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )
+            }
+          </div>
+
           <div className='dark:bg-zinc-800 bg-red-100 w-1/2 dark:text-white text-zinc-800 m-auto rounded-4xl border border-zinc-700 flex p-1 h-16 pr-5 items-center shrink-0'>
+            {/* Hidden File Input */}
+            <input 
+              type="file" 
+              id="file-upload" 
+              multiple 
+              className="hidden" 
+              onChange={(e) => {
+                if (e.target.files) {
+                  setSelectedFiles([...selectedFiles, ...Array.from(e.target.files)]);
+                }
+              }}
+            />
+            {/* 2. Attachment Button Label */}
+            <label 
+              htmlFor="file-upload" 
+              className="cursor-pointer px-4 text-xl text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 transition"
+              title="Attach file"
+            >
+              📎
+            </label>
+
             <input 
               type="text" 
               value={question} 
@@ -155,6 +215,13 @@ function App() {
               Ask
             </button>
           </div>
+          {
+            result.length > 0 && (
+              <div className='dark:text-white text-zinc-800 pt-2'>
+                This is AI and can make mistakes.
+              </div>
+            )
+          }
         </div>
       </div>
     </div>
